@@ -79,8 +79,8 @@ team_t team = {
 
 /* Given block ptr bp, compute address of next and previous free blocks
  * in the same size class */
-#define NEXT_LISTP(bp) ((char *)(bp))
-#define PREV_LISTP(bp) ((char *)(bp) + DSIZE)
+#define NEXT_LISTP(bp) (*((void **)(bp)))
+#define PREV_LISTP(bp) (*((void **)(bp) + 1))
 
 /* Set pointers to next and previous list elements */
 #define SET_NEXT_LISTP(bp, addr) (*((void **)(bp)) = (void *)(addr))
@@ -88,8 +88,8 @@ team_t team = {
 
 /* Given block ptr bp, compute address of next and previous size class 
  * free lists */
-#define NEXT_CLASSP(bp) ((char *)(bp) + 2 * DSIZE)
-#define PREV_CLASSP(bp) ((char *)(bp) + 3 * DSIZE)
+#define NEXT_CLASSP(bp) (*((void **)(bp) + 2))
+#define PREV_CLASSP(bp) (*((void **)(bp) + 3))
 
 /* Set pointers to next and previous size class tree lists */
 #define SET_NEXT_CLASSP(bp, addr) (*((void **)(bp) + 2) = (void *)(addr))
@@ -99,19 +99,22 @@ team_t team = {
 #define SET_ROOT(bp)	(*((char *)(bp) - WSIZE) |= 0x4)
 #define UNSET_ROOT(bp)	(*((char *)(bp) - WSIZE) &= ~0x4)
 
-static char *heap_listp;
-
+static char *prologuep;
+static char *epiloguep;
 
 static void place(void *bp, size_t asize);
 static void *extend_heap(size_t words);
 static void *coalesce(void *bp);
 static void *find_fit(size_t asize);
-static size_t get_sizeclass(size_t size);
+static size_t get_sizeclass_size(size_t size);
 static void insert_into_sizeclass(void *bp, void *cp);
 static void create_sizeclass(void *bp, void *prev_cp, void *next_cp);
 static size_t hibit(size_t x);
 static void remove_from_sizeclass(void *bp);
 static void insert_into_list(void *bp);
+
+static void traverse_lists();
+static void traverse_blocks();
 
 
 /* 
@@ -121,17 +124,36 @@ static void insert_into_list(void *bp);
  */
 int mm_init()
 {
-	if ((heap_listp = mem_sbrk(4 * WSIZE)) == (void *)-1) return -1;
-	PUT(heap_listp, 0);									/* Alignment padding */
-	PUT(heap_listp + (1 * WSIZE), PACK(DSIZE, 1, 1));	/* Prologue header */
-	PUT(heap_listp + (3 * WSIZE), PACK(0, 1, 1));		/* Epilogue header */
-	heap_listp += DSIZE;
+	if ((prologuep = mem_sbrk(2 * MIN_BLK_SIZE + 8)) == (void *)-1)
+		return -1;
 
-	if (extend_heap(mem_pagesize() / WSIZE) == NULL) return -1;
+	prologuep += DSIZE;
+	epiloguep = prologuep + MIN_BLK_SIZE;
+
+	PUT(HDRP(prologuep), PACK(MIN_BLK_SIZE, 1, 1));	/* Prologue header */
+	SET_ROOT(prologuep);
+	SET_PREV_LISTP(prologuep, prologuep);
+	SET_NEXT_LISTP(prologuep, prologuep);
+	SET_NEXT_CLASSP(prologuep, epiloguep);
+	SET_PREV_CLASSP(prologuep, prologuep);
+
+	PUT(HDRP(epiloguep), PACK(0, 1, 1));		/* Epilogue header */
+	SET_ROOT(epiloguep);
+	SET_PREV_LISTP(epiloguep, epiloguep);
+	SET_NEXT_LISTP(epiloguep, epiloguep);
+	SET_NEXT_CLASSP(epiloguep, epiloguep);
+	SET_PREV_CLASSP(epiloguep, prologuep);
+
+
+	if (extend_heap(mem_pagesize() / WSIZE) == NULL)
+		return -1;
 
 #ifdef DEBUG
-	printf("INTIALIZED WITH SIZE %d\n", GET_SIZE(HDRP(NEXT_BLKP(heap_listp))));
-	printf("End of heap: %p\n\n", NEXT_BLKP(NEXT_BLKP(heap_listp)));
+	printf("INTIALIZED WITH SIZE %d\n", GET_SIZE(HDRP(NEXT_BLKP(prologuep))));
+	printf("End of heap: %p\n\n", NEXT_BLKP(NEXT_BLKP(prologuep)));
+
+	traverse_lists();
+	traverse_blocks();
 #endif
 
     return 0;
@@ -164,6 +186,11 @@ void *mm_malloc(size_t size)
     if ((bp = find_fit(asize)) != NULL) {
     	remove_from_sizeclass(bp);
 		place(bp, asize);
+#ifdef DEBUG
+	printf("\tCreated new block at %p with %d bytes\n\n", bp, GET_SIZE(HDRP(bp)));
+	traverse_lists();
+	traverse_blocks();
+#endif
 		return bp;
 	}
 
@@ -173,6 +200,8 @@ void *mm_malloc(size_t size)
 	place(bp, asize);
 #ifdef DEBUG
 	printf("\tCreated new block at %p with %d bytes\n\n", bp, GET_SIZE(HDRP(bp)));
+	traverse_lists();
+	traverse_blocks();
 #endif
 	return bp;
 }
@@ -187,6 +216,7 @@ void mm_free(void *bp)
 #ifdef DEBUG
 	printf("Calling mm_free with bp = %p\n", bp);
 	printf("\tblock size = %d bytes and PINUSE_BIT = %d\n", size, prev_alloc);
+
 #endif
 
 	PUT(HDRP(bp), PACK(size, prev_alloc, 0));
@@ -202,6 +232,11 @@ void mm_free(void *bp)
 #endif
 	bp = coalesce(bp);
 	insert_into_list(bp);
+
+#ifdef DEBUG
+	traverse_lists();
+	traverse_blocks();
+#endif
 }
 
 /*
@@ -243,13 +278,24 @@ static void *extend_heap(size_t words)
 	if ((long) (bp = mem_sbrk(size)) == -1)
 		return NULL;
 
+	bp = epiloguep;
+	epiloguep += size;
+
 	/* Initialize free block header/footerand the epilogue header */
 	size_t prev_alloc = GET_PALLOC(HDRP(bp));
 	PUT(HDRP(bp), PACK(size, prev_alloc, 0));		/* Free block header */
 	PUT(FTRP(bp), PACK(size, prev_alloc, 0));		/* Free block footer */
-	PUT(HDRP(NEXT_BLKP(bp)), PACK(0, 0, 1));		/* New epilogue header */
+
+	PUT(HDRP(epiloguep), PACK(0, 0, 1));		/* New epilogue header */
+	SET_ROOT(epiloguep);
+	SET_PREV_CLASSP(epiloguep, PREV_CLASSP(bp));
+	SET_NEXT_CLASSP(epiloguep, epiloguep);
+	SET_NEXT_LISTP(epiloguep, epiloguep);
+	SET_PREV_LISTP(epiloguep, epiloguep);
+
+	SET_NEXT_CLASSP(PREV_CLASSP(bp), epiloguep);
 #ifdef DEBUG
-	printf("\tnew block created with %d bytes\n\n", size);
+	printf("\tnew block created with %d bytes, palloc = %d\n\n", size, prev_alloc);
 #endif
 
 	/* Coalesce if the previous block was free */
@@ -262,7 +308,8 @@ static void *extend_heap(size_t words)
 /*
  * @brief Coalesce free block with its neighbors.
  *
- * @param bp pointer to free block
+ * @param bp pointer to free block. This free block
+ * should not be in the lists data structure.
  * @return pointer to coalesced free block
  */
 static void *coalesce(void *bp)
@@ -277,9 +324,15 @@ static void *coalesce(void *bp)
 
 	if (prev_alloc && next_alloc) {
 		/* Do nothing */
+#ifdef DEBUG
+		printf("\t1 case\n");
+#endif
 	}
 	
 	else if (prev_alloc && !next_alloc) {
+#ifdef DEBUG
+		printf("\t2 case\n");
+#endif
 		remove_from_sizeclass(NEXT_BLKP(bp));
 
 		size += GET_SIZE(HDRP(NEXT_BLKP(bp)));
@@ -288,6 +341,9 @@ static void *coalesce(void *bp)
 	}
 	
 	else if (!prev_alloc && next_alloc) {
+#ifdef DEBUG
+		printf("\t3 case: previous %p size %d\n", PREV_BLKP(bp), GET_SIZE(HDRP(PREV_BLKP(bp))));
+#endif
 		remove_from_sizeclass(PREV_BLKP(bp));
 
 		size += GET_SIZE(HDRP(PREV_BLKP(bp)));
@@ -298,6 +354,9 @@ static void *coalesce(void *bp)
 	}
 	
 	else {
+#ifdef DEBUG
+		printf("\t4 case\n");
+#endif
 		remove_from_sizeclass(NEXT_BLKP(bp));
 		remove_from_sizeclass(PREV_BLKP(bp));
 
@@ -321,8 +380,8 @@ static void *coalesce(void *bp)
 static void *find_fit(size_t asize)
 {
 	char *cp;
-	for (cp = NEXT_CLASSP(heap_listp); GET_SIZE(HDRP(cp)) > 0; cp = NEXT_CLASSP(cp)) {
-		size_t sizeclass_size = get_sizeclass(GET_SIZE(HDRP(cp)));
+	for (cp = NEXT_CLASSP(prologuep); GET_SIZE(HDRP(cp)) > 0; cp = NEXT_CLASSP(cp)) {
+		size_t sizeclass_size = get_sizeclass_size(GET_SIZE(HDRP(cp)));
 
 		if (sizeclass_size >= asize) {
 			char *bp = cp;
@@ -393,7 +452,7 @@ static void place(void *bp, size_t asize)
  * @return maximum possible size of a free block in the
  * size class containing this size
  */
-static size_t get_sizeclass(size_t size)
+static size_t get_sizeclass_size(size_t size)
 {
 	size_t msb = hibit(size);
 	return msb << (msb == size ? 0 : 1);
@@ -409,17 +468,21 @@ static size_t get_sizeclass(size_t size)
  */
 static void remove_from_sizeclass(void *bp)
 {
-	assert(GET_ALLOC(HDRP(bp)) == 0);
 	char *prev_class_ptr = PREV_CLASSP(bp),
 		 *next_class_ptr = NEXT_CLASSP(bp),
 		 *prev_list_ptr = PREV_LISTP(bp),
 		 *next_list_ptr = NEXT_LISTP(bp);
 
+#ifdef DEBUG
+	printf("Called remove from sizeclass with bp = %p, size = %d\n", bp, GET_SIZE(HDRP(bp)));
+	printf("%p %p\n", prev_list_ptr, next_list_ptr);
+#endif
+
 	/*
 	 * bp is the only block in its free list,
 	 * so we remove its list
 	 */
-	if (prev_list_ptr == next_list_ptr) {
+	if (prev_list_ptr == bp) {
 		SET_NEXT_CLASSP(prev_class_ptr, next_class_ptr);
 		SET_PREV_CLASSP(next_class_ptr, prev_class_ptr);
 		return;
@@ -451,12 +514,16 @@ static void remove_from_sizeclass(void *bp)
  */
 static void insert_into_list(void *bp)
 {
+#ifdef DEBUG
+	printf("Called insert_into_list with bp = %p, size = %d\n", bp, GET_SIZE(HDRP(bp)));
+#endif
+
 	size_t block_size = GET_SIZE(HDRP(bp));
-	size_t block_sizeclass_size = get_sizeclass(block_size);
+	size_t block_sizeclass_size = get_sizeclass_size(block_size);
 
 	char *cp;
-	for (cp = NEXT_CLASSP(heap_listp); GET_SIZE(HDRP(cp)) > 0; cp = NEXT_CLASSP(cp)) {
-		size_t sizeclass_size = get_sizeclass(GET_SIZE(HDRP(cp)));
+	for (cp = NEXT_CLASSP(prologuep); GET_SIZE(HDRP(cp)) > 0; cp = NEXT_CLASSP(cp)) {
+		size_t sizeclass_size = get_sizeclass_size(GET_SIZE(HDRP(cp)));
 
 		if (block_sizeclass_size == sizeclass_size) {
 			insert_into_sizeclass(bp, cp);
@@ -480,12 +547,19 @@ static void insert_into_list(void *bp)
  */
 static void insert_into_sizeclass(void *bp, void *cp)
 {
+#ifdef DEBUG
+	printf("bp = %p, size = %d\n", bp, GET_SIZE(HDRP(bp)));
+	printf("cp = %p, size = %d\n", cp, GET_SIZE(HDRP(cp)));
+#endif
 	char *next_bp = NEXT_LISTP(cp);
 	SET_NEXT_LISTP(bp, next_bp);
 	SET_PREV_LISTP(bp, cp);
 	SET_PREV_LISTP(next_bp, bp);
 	SET_NEXT_LISTP(cp, bp);
 	UNSET_ROOT(bp);
+
+	assert(PREV_LISTP(bp) == cp);
+	assert(NEXT_LISTP(bp) == cp);
 }
 
 /*
@@ -530,15 +604,50 @@ static int test_hibit()
 	return hibit(0b10101) != 0b10000;
 }
 
-static int test_get_sizeclass()
+static int test_get_sizeclass_size()
 {
-	return get_sizeclass(135) != 256 ||
-		get_sizeclass(128) != 128;
+	return get_sizeclass_size(135) != 256 ||
+		get_sizeclass_size(128) != 128;
 }
 
 static void mm_check()
 {
 	ASSERT_FUN(test_hibit);
-	ASSERT_FUN(test_get_sizeclass);
+	ASSERT_FUN(test_get_sizeclass_size);
 }
 
+static void traverse_lists()
+{
+	char *cp = prologuep;
+	while (1) {
+		int size = GET_SIZE(HDRP(cp));
+		printf("This size is %d\n", size);
+		size_t sizeclass_size = get_sizeclass_size(size);
+		printf("New class [%d, %d]\n", (sizeclass_size >> 1) + 1, sizeclass_size);
+
+		char *cur_bp = cp;
+		do {
+			printf("\t%d\n", GET_SIZE(HDRP(cur_bp)));
+			cur_bp = NEXT_LISTP(cur_bp);
+		} while (cur_bp != cp);
+		printf("end of list\n\n");
+
+		if (GET_SIZE(HDRP(cp)) == 0) return;
+		cp = NEXT_CLASSP(cp);
+	}
+}
+
+static void traverse_blocks()
+{
+	printf("Traversing blocks\n");
+	char *cp = prologuep;
+	while (1) {
+		int size = GET_SIZE(HDRP(cp));
+		int palloc = GET_PALLOC(HDRP(cp));
+		printf("\tsize = %d, palloc = %d\n", size, palloc);
+
+		if (size == 0) return;
+
+		cp = NEXT_BLKP(cp);
+	} 
+}
