@@ -177,25 +177,29 @@ void *mm_malloc(size_t size)
 	size_t extendsize;		/* Amount to extend heap if no fit */
     char *bp;
 
-	if (size == 0) return NULL;
+	if (size == 0)
+		return NULL;
 
-	if (size <= MIN_BLK_SIZE) asize = MIN_BLK_SIZE;
-	else asize = DSIZE * ((size + (DSIZE) + (DSIZE - 1)) / DSIZE);
+	if (size <= MIN_BLK_SIZE)
+		asize = MIN_BLK_SIZE;
+	else
+		asize = DSIZE * ((size + (DSIZE) + (DSIZE - 1)) / DSIZE);
 
     /* Search the free list for a fit */
     if ((bp = find_fit(asize)) != NULL) {
     	remove_from_sizeclass(bp);
 		place(bp, asize);
 #ifdef DEBUG
-	printf("\tCreated new block at %p with %d bytes\n\n", bp, GET_SIZE(HDRP(bp)));
-	traverse_lists();
-	traverse_blocks();
+		printf("\tCreated new block at %p with %d bytes\n\n", bp, GET_SIZE(HDRP(bp)));
+		traverse_lists();
+		traverse_blocks();
 #endif
 		return bp;
 	}
 
 	extendsize = MAX(asize, mem_pagesize());
-	if ((bp = extend_heap(extendsize / WSIZE)) == NULL) return NULL;
+	if ((bp = extend_heap(extendsize / WSIZE)) == NULL)
+		return NULL;
 	remove_from_sizeclass(bp);
 	place(bp, asize);
 #ifdef DEBUG
@@ -249,7 +253,8 @@ void *mm_realloc(void *ptr, size_t size)
     size_t copySize;
     
     newptr = mm_malloc(size);
-    if (newptr == NULL) return NULL;
+    if (newptr == NULL)
+    	return NULL;
 
     copySize = MIN(size, GET_SIZE(HDRP(ptr)));
     memcpy(newptr, oldptr, copySize);
@@ -327,9 +332,7 @@ static void *coalesce(void *bp)
 #ifdef DEBUG
 		printf("\t1 case\n");
 #endif
-	}
-	
-	else if (prev_alloc && !next_alloc) {
+	} else if (prev_alloc && !next_alloc) {
 #ifdef DEBUG
 		printf("\t2 case\n");
 #endif
@@ -338,9 +341,7 @@ static void *coalesce(void *bp)
 		size += GET_SIZE(HDRP(NEXT_BLKP(bp)));
 		PUT(HDRP(bp), PACK(size, 1, 0));
 		PUT(FTRP(bp), PACK(size, 1, 0));
-	}
-	
-	else if (!prev_alloc && next_alloc) {
+	} else if (!prev_alloc && next_alloc) {
 #ifdef DEBUG
 		printf("\t3 case: previous %p size %d\n", PREV_BLKP(bp), GET_SIZE(HDRP(PREV_BLKP(bp))));
 #endif
@@ -351,9 +352,7 @@ static void *coalesce(void *bp)
 		PUT(FTRP(bp), PACK(size, 1, 0));
 		PUT(HDRP(PREV_BLKP(bp)), PACK(size, 1, 0));
 		bp = PREV_BLKP(bp);
-	}
-	
-	else {
+	} else {
 #ifdef DEBUG
 		printf("\t4 case\n");
 #endif
@@ -390,7 +389,8 @@ static void *find_fit(size_t asize)
 			 * a free block that is large enough
 			 */
 			do {
-				if (GET_SIZE(HDRP(bp)) >= asize) return bp;
+				if (GET_SIZE(HDRP(bp)) >= asize)
+					return bp;
 				bp = NEXT_LISTP(bp);
 			} while (bp != cp);
 		}
@@ -424,13 +424,11 @@ static void place(void *bp, size_t asize)
 		PUT(FTRP(next_bp), PACK(size - asize, 1, 0));
 		insert_into_list(next_bp);
 #ifdef DEBUG
-	printf("\tfirst block with %d bytes, second block with %d bytes\n", \
-			GET_SIZE(HDRP(bp)), GET_SIZE(HDRP(next_bp)));
-	printf("\tsecond at adress %p, PINUSE_BIT = %d\n\n", next_bp, GET_PALLOC(HDRP(next_bp)));
+		printf("\tfirst block with %d bytes, second block with %d bytes\n", \
+				GET_SIZE(HDRP(bp)), GET_SIZE(HDRP(next_bp)));
+		printf("\tsecond at adress %p, PINUSE_BIT = %d\n\n", next_bp, GET_PALLOC(HDRP(next_bp)));
 #endif
-	}
-
-	else {
+	} else {
 		PUT(HDRP(bp), PACK(size, prev_alloc, 1));
 
 		char *next_bp = NEXT_BLKP(bp);
@@ -438,7 +436,7 @@ static void place(void *bp, size_t asize)
 		size_t next_alloc = GET_ALLOC(HDRP(next_bp));
 		PUT(HDRP(next_bp), PACK(next_size, 1, next_alloc));
 #ifdef DEBUG
-	printf("\tonly one block with %d bytes\n\n", GET_SIZE(HDRP(bp)));
+		printf("\tonly one block with %d bytes\n\n", GET_SIZE(HDRP(bp)));
 #endif
 	}
 }
@@ -632,7 +630,8 @@ static void traverse_lists()
 		} while (cur_bp != cp);
 		printf("end of list\n\n");
 
-		if (GET_SIZE(HDRP(cp)) == 0) return;
+		if (GET_SIZE(HDRP(cp)) == 0)
+			return;
 		cp = NEXT_CLASSP(cp);
 	}
 }
@@ -646,7 +645,8 @@ static void traverse_blocks()
 		int palloc = GET_PALLOC(HDRP(cp));
 		printf("\tsize = %d, palloc = %d\n", size, palloc);
 
-		if (size == 0) return;
+		if (size == 0)
+			return;
 
 		cp = NEXT_BLKP(cp);
 	} 
