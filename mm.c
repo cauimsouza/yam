@@ -54,7 +54,7 @@ team_t team = {
 #define MAX_SINGLE_CLASS 2048
 
 /* Number of size classes containing only one size */
-#define NUM_SINGLE_SIZECLASSES (1 + (MAX_SINGLE_CLASS - MIN_BIGBLK_SIZE) / DSIZE)
+#define NUM_SINGLE_SIZECLASSES (1 + (MAX_SINGLE_CLASS - MIN_BLK_SIZE) / DSIZE)
 
 /* Returns the maximum/minimum of two integers */
 #define MAX(x, y) ((x) > (y) ? (x) : (y))
@@ -122,6 +122,7 @@ static size_t hibit(size_t x);
 static void remove_from_sizeclass(void *bp);
 static void insert_into_list(void *bp);
 static void *init_array();
+static size_t get_bin_id(size_t size);
 
 static void traverse_lists();
 static void traverse_blocks();
@@ -225,7 +226,10 @@ void *mm_malloc(size_t size)
 }
 
 /*
- * mm_free - Updates header and footer and coalesce with neighbors
+ * @brief Frees an allocated block.
+ *
+ * @param pointer to allocated block
+ * @return nothing
  */
 void mm_free(void *bp)
 {
@@ -258,7 +262,18 @@ void mm_free(void *bp)
 }
 
 /*
- * mm_realloc - Implemented simply in terms of mm_malloc and mm_free
+ * @brief Reallocates an allocated block and copies
+ * its data.
+ *
+ * Copies the first size bytes of the old allocated
+ * block into the new block if the new block has a
+ * capacity at least equal to size. If its capacity
+ * is smaller than size, then a number of bytes igual
+ * to its capacity is copied.
+ *
+ * @param ptr pointed to allocated block
+ * @param size size of the new allocated block
+ * @return pointer to the new allocated block
  */
 void *mm_realloc(void *ptr, size_t size)
 {
@@ -392,6 +407,27 @@ static void *coalesce(void *bp)
  */
 static void *find_fit(size_t asize)
 {
+	/*
+	 * if asize corresponds to a size of fixed-size
+	 * size class, then we try to allocate from its
+	 * corresponding fixed-size list
+	 */
+	if (asize <= MAX_SINGLE_CLASS) {
+		int bin_id = get_bin_id(asize);
+
+		int i;
+		for (i = bin_id; i < NUM_SINGLE_SIZECLASSES; i++) {
+			void **list_p = heap_listp + i;
+
+			if (*list_p != NULL) 
+				return *list_p;
+		}
+	}
+
+	/*
+	 * if asize is greater than or equal to MAX_SINGLE_CLASS,
+	 * then we look in the list of mixed-sized size classes
+	 */
 	char *cp;
 	for (cp = NEXT_CLASSP(prologuep); GET_SIZE(HDRP(cp)) > 0; cp = NEXT_CLASSP(cp)) {
 		size_t sizeclass_size = get_sizeclass_size(GET_SIZE(HDRP(cp)));
@@ -430,12 +466,17 @@ static void place(void *bp, size_t asize)
 	printf("\tcurrent block has size = %d bytes and PINSUSE_BIT = %d\n", size, prev_alloc);
 #endif
 
-	if (size >= asize + MIN_BIGBLK_SIZE) {
+	if (size >= asize + MIN_BLK_SIZE) {
 		PUT(HDRP(bp), PACK(asize, prev_alloc, 1));
 
 		char *next_bp = NEXT_BLKP(bp);
 		PUT(HDRP(next_bp), PACK(size - asize, 1, 0));
 		PUT(FTRP(next_bp), PACK(size - asize, 1, 0));
+#ifdef DEBUG
+		printf("\tfirst block with %d bytes, second block with %d bytes\n", \
+				GET_SIZE(HDRP(bp)), GET_SIZE(HDRP(next_bp)));
+		printf("\tsecond at adress %p, PINUSE_BIT = %d\n\n", next_bp, GET_PALLOC(HDRP(next_bp)));
+#endif
 		insert_into_list(next_bp);
 #ifdef DEBUG
 		printf("\tfirst block with %d bytes, second block with %d bytes\n", \
@@ -466,6 +507,8 @@ static void place(void *bp, size_t asize)
  */
 static size_t get_sizeclass_size(size_t size)
 {
+	if (size <= MAX_SINGLE_CLASS)
+		return size;
 	size_t msb = hibit(size);
 	return msb << (msb == size ? 0 : 1);
 }
@@ -480,6 +523,28 @@ static size_t get_sizeclass_size(size_t size)
  */
 static void remove_from_sizeclass(void *bp)
 {
+	size_t block_size = GET_SIZE(HDRP(bp));
+	size_t block_sizeclass_size = get_sizeclass_size(block_size);
+
+	/*
+	 * case where block is contained in a fixed-size
+	 * size class list
+	 */
+	if (block_sizeclass_size <= MAX_SINGLE_CLASS) {
+		int bin_id = get_bin_id(block_sizeclass_size);
+		void **list_p = heap_listp + bin_id;
+		void *prev_list_ptr = PREV_LISTP(bp),
+			 *next_list_ptr = NEXT_LISTP(bp);
+
+		if (prev_list_ptr != NULL)
+			SET_NEXT_LISTP(prev_list_ptr, next_list_ptr);
+		if (next_list_ptr != NULL)
+			SET_PREV_LISTP(next_list_ptr, prev_list_ptr);
+		if (*list_p == bp)
+			*list_p = next_list_ptr;
+		return;
+	}
+
 	char *prev_class_ptr = PREV_CLASSP(bp),
 		 *next_class_ptr = NEXT_CLASSP(bp),
 		 *prev_list_ptr = PREV_LISTP(bp),
@@ -487,7 +552,6 @@ static void remove_from_sizeclass(void *bp)
 
 #ifdef DEBUG
 	printf("Called remove from sizeclass with bp = %p, size = %d\n", bp, GET_SIZE(HDRP(bp)));
-	printf("%p %p\n", prev_list_ptr, next_list_ptr);
 #endif
 
 	/*
@@ -532,6 +596,23 @@ static void insert_into_list(void *bp)
 
 	size_t block_size = GET_SIZE(HDRP(bp));
 	size_t block_sizeclass_size = get_sizeclass_size(block_size);
+
+	/*
+	 * if possible, insert the free block in one fixed-size
+	 * size class list
+	 */
+	if (block_sizeclass_size <= MAX_SINGLE_CLASS) {
+		int bin_id = get_bin_id(block_sizeclass_size);
+		void **list_p = heap_listp + bin_id;
+
+		if (*list_p != NULL) 
+			SET_PREV_LISTP(*list_p, bp);
+
+		SET_NEXT_LISTP(bp, *list_p);
+		SET_PREV_LISTP(bp, NULL);
+		*list_p = bp;
+		return;
+	}
 
 	char *cp;
 	for (cp = NEXT_CLASSP(prologuep); GET_SIZE(HDRP(cp)) > 0; cp = NEXT_CLASSP(cp)) {
@@ -628,6 +709,19 @@ static void *init_array()
 	}
 
 	return heap_listp;
+}
+
+/*
+ * @brief Returns the bin id for the size class
+ * of given size.
+ *
+ * @param size size of the fixed size class (should
+ * be a multiple of 8 and greater or equal to MIN_BLK_SIZE)
+ * @return bin id of the corresponding size class.
+ */
+static size_t get_bin_id(size_t size)
+{
+	return (size - MIN_BLK_SIZE) / DSIZE;
 }
 
 #define ASSERT_FUN(fun) (assert(fun() == 0));
