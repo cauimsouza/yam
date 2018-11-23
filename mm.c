@@ -35,8 +35,11 @@ team_t team = {
     "ian.duleba@polytechnique.edu"
 };
 
-/* Minimum block size */
-#define MIN_BLK_SIZE 40
+/* Minimum allowed block size for allocation */
+#define MIN_BLK_SIZE 24
+
+/* Minimum block size for blocks in the mixed-size size class lists */
+#define MIN_BIGBLK_SIZE 40
 
 /* Single word size */
 #define WSIZE 4
@@ -44,9 +47,14 @@ team_t team = {
 /* Double word size */
 #define DSIZE 8
 
-/* Define the maximum size class whose free blocks have
- * all the same size */
-#define MAX_SINGLE_CLASS 1024
+/* 
+ * Define the maximum size class whose free blocks have
+ * all the same size
+ */
+#define MAX_SINGLE_CLASS 2048
+
+/* Number of size classes containing only one size */
+#define NUM_SINGLE_SIZECLASSES (1 + (MAX_SINGLE_CLASS - MIN_BIGBLK_SIZE) / DSIZE)
 
 /* Returns the maximum/minimum of two integers */
 #define MAX(x, y) ((x) > (y) ? (x) : (y))
@@ -99,6 +107,7 @@ team_t team = {
 #define SET_ROOT(bp)	(*((char *)(bp) - WSIZE) |= 0x4)
 #define UNSET_ROOT(bp)	(*((char *)(bp) - WSIZE) &= ~0x4)
 
+static void **heap_listp;
 static char *prologuep;
 static char *epiloguep;
 
@@ -112,6 +121,7 @@ static void create_sizeclass(void *bp, void *prev_cp, void *next_cp);
 static size_t hibit(size_t x);
 static void remove_from_sizeclass(void *bp);
 static void insert_into_list(void *bp);
+static void *init_array();
 
 static void traverse_lists();
 static void traverse_blocks();
@@ -124,13 +134,17 @@ static void traverse_blocks();
  */
 int mm_init()
 {
-	if ((prologuep = mem_sbrk(2 * MIN_BLK_SIZE + 8)) == (void *)-1)
+	char *bp;
+	if( (bp = init_array()) == (void *)-1)
+		return -1;
+
+	if ((prologuep = mem_sbrk(2 * MIN_BIGBLK_SIZE + 8)) == (void *)-1)
 		return -1;
 
 	prologuep += DSIZE;
-	epiloguep = prologuep + MIN_BLK_SIZE;
+	epiloguep = prologuep + MIN_BIGBLK_SIZE;
 
-	PUT(HDRP(prologuep), PACK(MIN_BLK_SIZE, 1, 1));	/* Prologue header */
+	PUT(HDRP(prologuep), PACK(MIN_BIGBLK_SIZE, 1, 1));	/* Prologue header */
 	SET_ROOT(prologuep);
 	SET_PREV_LISTP(prologuep, prologuep);
 	SET_NEXT_LISTP(prologuep, prologuep);
@@ -180,8 +194,8 @@ void *mm_malloc(size_t size)
 	if (size == 0)
 		return NULL;
 
-	if (size <= MIN_BLK_SIZE)
-		asize = MIN_BLK_SIZE;
+	if (size <= MIN_BIGBLK_SIZE)
+		asize = MIN_BIGBLK_SIZE;
 	else
 		asize = DSIZE * ((size + (DSIZE) + (DSIZE - 1)) / DSIZE);
 
@@ -416,7 +430,7 @@ static void place(void *bp, size_t asize)
 	printf("\tcurrent block has size = %d bytes and PINSUSE_BIT = %d\n", size, prev_alloc);
 #endif
 
-	if (size >= asize + MIN_BLK_SIZE) {
+	if (size >= asize + MIN_BIGBLK_SIZE) {
 		PUT(HDRP(bp), PACK(asize, prev_alloc, 1));
 
 		char *next_bp = NEXT_BLKP(bp);
@@ -593,6 +607,27 @@ static size_t hibit(size_t x)
 	x |= (x >> 8);
 	x |= (x >> 16);
 	return x ^ (x >> 1);
+}
+
+/*
+ * @brief Initalizes the array of pointers to the
+ * fixed-size size class lists.
+ *
+ * @return pointer to the first element in the array
+ */
+static void *init_array()
+{
+	if((heap_listp = mem_sbrk(DSIZE * NUM_SINGLE_SIZECLASSES)) == (void *) -1)
+		return (void *)-1;
+
+	void **cp = heap_listp;
+	int i;
+	for (i = 0; i < NUM_SINGLE_SIZECLASSES; i++) {
+		*cp = 0;	
+		cp++;
+	}
+
+	return heap_listp;
 }
 
 #define ASSERT_FUN(fun) (assert(fun() == 0));
