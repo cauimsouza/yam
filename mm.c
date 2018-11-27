@@ -778,6 +778,184 @@ static int tests_run = 0;
  */
 
 /*
+ * @brief Tests function hibit.
+ *
+ * @return 1 if test passed, 0 otherwise
+ */
+static int test_hibit()
+{
+	_assert(hibit(0b10101) == 0b10000);
+	return 1;
+}
+
+/*
+ * @brief Tests function get_sizeclass_size.
+ *
+ * @return 1 if test passed, 0 otherwise
+ */
+static int test_get_sizeclass_size()
+{
+	_assert(get_sizeclass_size(2049) == 4096 ||
+		get_sizeclass_size(4096) == 4096);
+	return 1;
+}
+
+/*
+ * @brief Tests if every block in the free lists
+ * are marked as free.
+ *
+ * @return 0 if at least a block in a free list
+ * is not marked as free, 1 otherwise
+ */
+static int test_allocated_block_in_a_freelist()
+{
+	/*
+	 * check lists of small blocks
+	 */
+	int i;
+	for (i = 0; i < NUM_SINGLE_SIZECLASSES; i++) {
+		void **listp = heap_listp + i;
+		if (*listp != NULL) {
+			char *first_bp = *listp;
+			char *bp = first_bp;		
+			do {
+				if (GET_ALLOC(HDRP(bp)))
+					_assert(0);
+				bp = NEXT_LISTP(bp);
+			} while (bp != first_bp && bp != NULL);
+		}
+	}
+
+	/*
+	 * check lists of larger blocks
+	 */
+	char *classp;
+	for (classp = NEXT_CLASSP(prologuep); GET_SIZE(HDRP(classp)) > 0; classp = NEXT_CLASSP(classp)) {
+		char *first_bp = classp;
+		char *bp = first_bp;
+		do {
+			if (GET_ALLOC(bp))
+				_assert(0);
+			bp = NEXT_LISTP(bp);
+		} while (bp != first_bp);
+	}
+
+	return 1;
+}
+
+/*
+ * @brief Tests if there are contiguous
+ * free blocks that escaped coalescing.
+ *
+ * @return 0 if there are contiguous free blocks,
+ * 1 otherwise
+ */
+static int test_contiguous_freeblocks()
+{
+	char *bp;
+	for (bp = NEXT_BLKP(prologuep); GET_SIZE(HDRP(bp)) > 0; bp = NEXT_BLKP(bp)) {
+		char *next_bp = NEXT_BLKP(bp);
+		if (!GET_ALLOC(HDRP(bp)) && !GET_ALLOC(HDRP(next_bp)))
+			_assert(0);
+	}
+	return 1;
+}
+
+/*
+ * @brief Checks if block is present
+ * in a specified free list.
+ *
+ * @param bp pointer to we're looking for.
+ * @param listp pointer to free list.
+ * @return 1 if block pointed by bp is present
+ * in free list pointed by listp, 0 otherwise
+ */
+static int is_in_freelist(char *bp, char *listp)
+{
+	if (listp == NULL)
+		return 0;
+
+	char *next_bp = listp;
+	do {
+		if (next_bp == bp)
+			return 1;
+		/*
+		 * we are traversing a singly linked list 
+		 * and we reached the end
+		 */
+		else if (next_bp == NULL)
+			return 0;
+		else
+			next_bp = NEXT_LISTP(next_bp);
+	} while (next_bp != listp);
+	return 0;
+}
+
+/*
+ * @brief Checks if a free block is present
+ * in the appropriate (corresponding to its
+ * size class) free list.
+ *
+ * @param bp pointer to free block.
+ * @return 1 if block pointed by bp is present
+ * in its appropriate free list, 0 otherwise
+ */
+static int is_in_some_freelist(char *bp)
+{
+	size_t block_size = GET_SIZE(HDRP(bp));
+	size_t bin_id = get_bin_id(block_size);
+
+	if (bin_id < NUM_SINGLE_SIZECLASSES) {
+		/*
+		 * block is small, so we look in the
+		 * list containing only blocks of same
+		 * size
+		 */
+		char *listp = *(heap_listp + bin_id);
+		return is_in_freelist(bp, listp);
+	} else {
+		/*
+		 * block is large, we look in the mixed-sizes
+		 * lists
+		 */
+		size_t block_sizeclass_size = get_sizeclass_size(block_size);
+		char *classp;
+		for (classp = NEXT_CLASSP(prologuep); GET_SIZE(HDRP(classp)) > 0; classp = NEXT_CLASSP(classp)) {
+			size_t class_size = get_sizeclass_size(GET_SIZE(HDRP(classp)));
+			
+			/*
+			 * as the lists are ordered by size class size,
+			 * we can stop if next size class size is greater
+			 * than size class size of block pointed by bp
+			 */
+			if (block_sizeclass_size < class_size)
+				return 0;
+			else if (block_sizeclass_size == class_size)
+				return is_in_freelist(bp, classp);
+		}
+	}
+
+	return 0;
+}
+
+/*
+ * @brief Tests if every free block is
+ * contained in a free list.
+ *
+ * @return 0 if there is at least a free block
+ * not contained in a free list, 1 otherwise
+ */
+static int test_freeblock_not_in_the_freelist()
+{
+	char *bp;
+	for (bp = NEXT_BLKP(prologuep); GET_SIZE(HDRP(bp)) > 0; bp = NEXT_BLKP(bp)) {
+		if (!GET_ALLOC(HDRP(bp)) && !is_in_some_freelist(bp))
+			_assert(0);
+	}
+	return 1;
+}
+
+/*
  * @brief Runs all tests.
  *
  * @return 1 if all the tests passed,
@@ -786,6 +964,11 @@ static int tests_run = 0;
 static int all_tests()
 {
 	tests_run = 0;
+	_verify(test_hibit);
+	_verify(test_get_sizeclass_size);
+	_verify(test_allocated_block_in_a_freelist);
+	_verify(test_contiguous_freeblocks);
+	_verify(test_freeblock_not_in_the_freelist);
 
 	return 1;
 }
