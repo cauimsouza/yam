@@ -127,6 +127,8 @@ static size_t get_bin_id(size_t size);
 static void traverse_lists();
 static void traverse_blocks();
 
+static void mm_check();
+
 
 /* 
  * @brief Creates a heap with an initial free block.
@@ -169,6 +171,7 @@ int mm_init()
 
 	traverse_lists();
 	traverse_blocks();
+	mm_check();
 #endif
 
     return 0;
@@ -208,6 +211,7 @@ void *mm_malloc(size_t size)
 		printf("\tCreated new block at %p with %d bytes\n\n", bp, GET_SIZE(HDRP(bp)));
 		traverse_lists();
 		traverse_blocks();
+		mm_check();
 #endif
 		return bp;
 	}
@@ -258,6 +262,7 @@ void mm_free(void *bp)
 #ifdef DEBUG
 	traverse_lists();
 	traverse_blocks();
+	mm_check();
 #endif
 }
 
@@ -478,11 +483,6 @@ static void place(void *bp, size_t asize)
 		printf("\tsecond at adress %p, PINUSE_BIT = %d\n\n", next_bp, GET_PALLOC(HDRP(next_bp)));
 #endif
 		insert_into_list(next_bp);
-#ifdef DEBUG
-		printf("\tfirst block with %d bytes, second block with %d bytes\n", \
-				GET_SIZE(HDRP(bp)), GET_SIZE(HDRP(next_bp)));
-		printf("\tsecond at adress %p, PINUSE_BIT = %d\n\n", next_bp, GET_PALLOC(HDRP(next_bp)));
-#endif
 	} else {
 		PUT(HDRP(bp), PACK(size, prev_alloc, 1));
 
@@ -724,25 +724,6 @@ static size_t get_bin_id(size_t size)
 	return (size - MIN_BLK_SIZE) / DSIZE;
 }
 
-#define ASSERT_FUN(fun) (assert(fun() == 0));
-
-static int test_hibit()
-{
-	return hibit(0b10101) != 0b10000;
-}
-
-static int test_get_sizeclass_size()
-{
-	return get_sizeclass_size(135) != 256 ||
-		get_sizeclass_size(128) != 128;
-}
-
-static void mm_check()
-{
-	ASSERT_FUN(test_hibit);
-	ASSERT_FUN(test_get_sizeclass_size);
-}
-
 static void traverse_lists()
 {
 	char *cp = prologuep;
@@ -771,12 +752,54 @@ static void traverse_blocks()
 	char *cp = prologuep;
 	while (1) {
 		int size = GET_SIZE(HDRP(cp));
+		int alloc = GET_ALLOC(HDRP(cp));
 		int palloc = GET_PALLOC(HDRP(cp));
-		printf("\tsize = %d, palloc = %d\n", size, palloc);
+		printf("\tsize = %d, alloc = %d, palloc = %d\n", size, alloc, palloc);
 
 		if (size == 0)
 			return;
 
 		cp = NEXT_BLKP(cp);
 	} 
+}
+
+/*
+ * Framework for testing
+ */
+
+#define FAIL() printf("\nfailure in %s() line %d\n", __func__, __LINE__)
+#define _assert(test) do { if (!(test)) { FAIL(); return 0; } } while (0)
+#define _verify(test) do { int r = test(); tests_run++; if (!r) return r; } while (0)
+static int tests_run = 0;
+
+
+/*
+ * Unit tests
+ */
+
+/*
+ * @brief Runs all tests.
+ *
+ * @return 1 if all the tests passed,
+ * 0 otherwise
+ */
+static int all_tests()
+{
+	tests_run = 0;
+
+	return 1;
+}
+
+/*
+ * @brief Performs consistency tests and terminates
+ * the program if any of them fails.
+ *
+ * @return nothing
+ */
+static void mm_check()
+{
+	if (all_tests())
+		printf("All tests passed. Tests run: %d\n", tests_run);
+	else
+		exit(0);
 }
