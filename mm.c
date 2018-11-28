@@ -141,7 +141,7 @@ int mm_init()
 	if( (bp = init_array()) == (void *)-1)
 		return -1;
 
-	if ((prologuep = mem_sbrk(2 * MIN_BIGBLK_SIZE + 8)) == (void *)-1)
+	if ((prologuep = mem_sbrk(2 * MIN_BIGBLK_SIZE + DSIZE)) == (void *)-1)
 		return -1;
 
 	prologuep += DSIZE;
@@ -198,6 +198,7 @@ void *mm_malloc(size_t size)
 	if (size == 0)
 		return NULL;
 
+	size += WSIZE;
 	if (size <= MIN_BIGBLK_SIZE)
 		asize = MIN_BIGBLK_SIZE;
 	else
@@ -239,19 +240,23 @@ void mm_free(void *bp)
 {
 	size_t size = GET_SIZE(HDRP(bp));
 	size_t prev_alloc = GET_PALLOC(HDRP(bp));
+	int root = GET_ROOT(HDRP(bp));
 #ifdef DEBUG
 	printf("Calling mm_free with bp = %p\n", bp);
-	printf("\tblock size = %d bytes and PINUSE_BIT = %d\n", size, prev_alloc);
+	printf("\tblock size = %d bytes, PINUSE_BIT = %d, root = %d\n", size, prev_alloc, root);
 
 #endif
 
 	PUT(HDRP(bp), PACK(size, prev_alloc, 0));
 	PUT(FTRP(bp), PACK(size, prev_alloc, 0));
+	if (root) SET_ROOT(bp);
 
 	char *next_bp = NEXT_BLKP(bp);
 	size_t next_size = GET_SIZE(HDRP(next_bp));
 	size_t next_alloc = GET_ALLOC(HDRP(next_bp));
+	int next_root = GET_ROOT(HDRP(next_bp));
 	PUT(HDRP(next_bp), PACK(next_size, 0, next_alloc));
+	if (next_root) SET_ROOT(next_bp);
 
 #ifdef DEBUG
 	printf("\t%d bytes freed\n\n", GET_SIZE(HDRP(bp)));
@@ -358,7 +363,8 @@ static void *coalesce(void *bp)
 	size_t size = GET_SIZE(HDRP(bp));
 #ifdef DEBUG
 	printf("Called coalesce with bp = %p\n", bp);
-	printf("\tPINUSE_BIT = %d, NINUSE = %d, size = %d\n\n", prev_alloc, next_alloc, size);
+	printf("\tPINUSE_BIT = %d, NINUSE = %d, size = %d\n", prev_alloc, next_alloc, size);
+	printf("\tnext = %p, root next = %d\n\n", NEXT_BLKP(bp), GET_ROOT(HDRP(NEXT_BLKP(bp))));
 #endif
 
 	if (prev_alloc && next_alloc) {
@@ -514,7 +520,7 @@ static size_t get_sizeclass_size(size_t size)
 }
 
 /*
- * @brief Remove free block bp from its size class double-linked
+ * @brief Remove free block bp from its size class linked
  * list.
  *
  * @param bp pointer to free block to be removed from its size
@@ -525,6 +531,11 @@ static void remove_from_sizeclass(void *bp)
 {
 	size_t block_size = GET_SIZE(HDRP(bp));
 	size_t block_sizeclass_size = get_sizeclass_size(block_size);
+
+#ifdef DEBUG
+	int root = GET_ROOT(HDRP(bp));
+	printf("Called remove from sizeclass with bp = %p, size = %d, root = %d\n", bp, block_size, root);
+#endif
 
 	/*
 	 * case where block is contained in a fixed-size
@@ -550,10 +561,6 @@ static void remove_from_sizeclass(void *bp)
 		 *prev_list_ptr = PREV_LISTP(bp),
 		 *next_list_ptr = NEXT_LISTP(bp);
 
-#ifdef DEBUG
-	printf("Called remove from sizeclass with bp = %p, size = %d\n", bp, GET_SIZE(HDRP(bp)));
-#endif
-
 	/*
 	 * bp is the only block in its free list,
 	 * so we remove its list
@@ -572,13 +579,18 @@ static void remove_from_sizeclass(void *bp)
 	 * free block in its list becomes the root
 	 */
 	if (GET_ROOT(HDRP(bp))) {
-		SET_ROOT(HDRP(next_list_ptr));
+		SET_ROOT(next_list_ptr);
 		SET_PREV_CLASSP(next_list_ptr, prev_class_ptr);
 		SET_NEXT_CLASSP(next_list_ptr, next_class_ptr);
 
 		SET_NEXT_CLASSP(prev_class_ptr, next_list_ptr);
 		SET_PREV_CLASSP(next_class_ptr, next_list_ptr);
+
+		char *new_root = NEXT_CLASSP(prev_class_ptr);
+		assert(NEXT_LISTP(PREV_LISTP(new_root)) == new_root);
+		assert(PREV_LISTP(NEXT_LISTP(new_root)) == new_root);
 	}
+
 }
 
 /*
@@ -644,15 +656,19 @@ static void insert_into_sizeclass(void *bp, void *cp)
 	printf("bp = %p, size = %d\n", bp, GET_SIZE(HDRP(bp)));
 	printf("cp = %p, size = %d\n", cp, GET_SIZE(HDRP(cp)));
 #endif
-	char *next_bp = NEXT_LISTP(cp);
-	SET_NEXT_LISTP(bp, next_bp);
-	SET_PREV_LISTP(bp, cp);
-	SET_PREV_LISTP(next_bp, bp);
-	SET_NEXT_LISTP(cp, bp);
 	UNSET_ROOT(bp);
-
-	assert(PREV_LISTP(bp) == cp);
-	assert(NEXT_LISTP(bp) == cp);
+	char *next_bp = NEXT_LISTP(cp);
+	if (next_bp == cp) {
+		SET_NEXT_LISTP(bp, cp);
+		SET_PREV_LISTP(bp, cp);
+		SET_NEXT_LISTP(cp, bp);
+		SET_PREV_LISTP(cp, bp);
+	} else {
+		SET_NEXT_LISTP(bp, next_bp);
+		SET_PREV_LISTP(bp, cp);
+		SET_PREV_LISTP(next_bp, bp);
+		SET_NEXT_LISTP(cp, bp);
+	}
 }
 
 /*
@@ -729,9 +745,12 @@ static void traverse_lists()
 	char *cp = prologuep;
 	while (1) {
 		int size = GET_SIZE(HDRP(cp));
-		printf("This size is %d\n", size);
 		size_t sizeclass_size = get_sizeclass_size(size);
+
+		printf("Header is %p\n", cp);
+		printf("Header's size is %d\n", size);
 		printf("New class [%d, %d]\n", (sizeclass_size >> 1) + 1, sizeclass_size);
+		assert(NEXT_LISTP(PREV_LISTP(cp)) == cp);
 
 		char *cur_bp = cp;
 		do {
@@ -802,7 +821,7 @@ static int test_get_sizeclass_size()
 
 /*
  * @brief Tests if every block in the free lists
- * are marked as free.
+ * is marked as free.
  *
  * @return 0 if at least a block in a free list
  * is not marked as free, 1 otherwise
@@ -955,6 +974,18 @@ static int test_freeblock_not_in_the_freelist()
 	return 1;
 }
 
+static int test_roots()
+{
+	char *cp;
+	for (cp = NEXT_CLASSP(prologuep); GET_SIZE(HDRP(cp)) > 0; cp = NEXT_CLASSP(cp)) {
+		printf("size-assert = %d\n", GET_SIZE(HDRP(cp)));
+		_assert(GET_ROOT(HDRP(cp)));
+		_assert(PREV_LISTP(NEXT_LISTP(cp)) == cp);
+		_assert(NEXT_LISTP(PREV_LISTP(cp)) == cp);
+	}
+	return 1;
+}
+
 /*
  * @brief Runs all tests.
  *
@@ -969,10 +1000,12 @@ static int all_tests()
 	_verify(test_allocated_block_in_a_freelist);
 	_verify(test_contiguous_freeblocks);
 	_verify(test_freeblock_not_in_the_freelist);
+	_verify(test_roots);
 
 	return 1;
 }
 
+int total = 0;
 /*
  * @brief Performs consistency tests and terminates
  * the program if any of them fails.
@@ -981,8 +1014,9 @@ static int all_tests()
  */
 static void mm_check()
 {
+	total++;
 	if (all_tests())
-		printf("All tests passed. Tests run: %d\n", tests_run);
+		printf("%dAll tests passed. Tests run: %d\n", total, tests_run);
 	else
 		exit(0);
 }
