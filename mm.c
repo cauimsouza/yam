@@ -1,13 +1,54 @@
 /*
- * mm-naive.c - The fastest, least memory-efficient malloc package.
- * 
- * In this naive approach, a block is allocated by simply incrementing
- * the brk pointer.  A block is pure payload. There are no headers or
- * footers.  Blocks are never coalesced or reused. Realloc is
- * implemented directly using mm_malloc and mm_free.
+ * Explicit dynamic memory allocator strategy description
  *
- * NOTE TO STUDENTS: Replace this header comment with your own header
- * comment that gives a high level description of your solution.
+ * This dynamic memory allocator implements a segreggated free lists strategy.
+ *
+ * Blocks are divided in two groups: blocks smaller or equal to 2048 bytes
+ * and blocks greater than 2048 bytes.
+ *
+ * Each small free block (size <= 2048 bytes) is stored in a doubly-linked
+ * list containing only free blocks of the same size. Each big block is
+ * stored in a circular doubly-linked list containing mixed-sized blocks
+ * (each list contains blocks of size in the interval [2^i + 1, 2^(i+1)]
+ * for a certain i).
+ *
+ * Free blocks are chosen using a first-fit method. If the size is small,
+ * we look first in the corresponding fixed-size free list. If the size is
+ * big we jump directly to the list of doubled-linked lists. In any case,
+ * if a given list is empty or its elements is too small, we try the next
+ * list until either we find a large enough free block or we reach the end
+ * of the heap. The lists are organized as a doubly-linked list in
+ * increasing order (a free list containing larger blocks is after a free
+ * list containing smaller blocks).
+ *
+ * Split is performed whenever possible (if the remaining block is larger
+ * than the smallest block possible).
+ *
+ * Free blocks are immediately coalesced with its neighbors.
+ *
+ * Free blocks greater than 2048 bytes have a header, a footer, and four
+ * pointers:
+ * 	- a pointer to the previous free block in the same free list
+ * 	- a pointer to the next free block in the same free list
+ * 	- a pointer to an element(root) in the next free list (may be invalid
+ * 	if the free block is not the root of its free list)
+ * 	- a pointer to an element(root) in the previous free list (may be invalid
+ * 	if the free block is not the root of its free list)
+ *
+ * 	Free blocks smaller than 2048 bytes have a header, a footer and two
+ * 	pointers: to the previous and to the next free blocks in the same
+ * 	free list.
+ *
+ * 	Therefore, the minimum block size is only 24 bytes in a 64 bit system.
+ *
+ * 	Allocated blocks contain only a header and its payload. To know whether
+ * 	the previous block is allocated or not we simply use one of the three first
+ * 	unused bits in the header of the next block and updated it whenever the block
+ * 	is freed.
+ *
+ * 	Each block contains uses one of the three first unused bits in its header
+ * 	to indicate whether it's allocated or free, and another bit to indicate whether
+ * 	the block is the root of its free list (if the block is free).
  */
 #include <stdio.h>
 #include <stdlib.h>
