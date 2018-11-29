@@ -153,6 +153,7 @@ static char *prologuep;
 static char *epiloguep;
 
 static void place(void *bp, size_t asize);
+static size_t get_asize(size_t size);
 static void *extend_heap(size_t words);
 static void *coalesce(void *bp);
 static void *find_fit(size_t asize);
@@ -164,6 +165,8 @@ static void remove_from_sizeclass(void *bp);
 static void insert_into_list(void *bp);
 static void *init_array();
 static size_t get_bin_id(size_t size);
+static void insert_into_root(void *bp, void *cp);
+static void insert_after(void *bp, void *prev_bp);
 
 static void mm_check();
 
@@ -224,11 +227,7 @@ void *mm_malloc(size_t size)
 	if (size == 0)
 		return NULL;
 
-	size += WSIZE;
-	if (size <= MIN_BIGBLK_SIZE)
-		asize = MIN_BIGBLK_SIZE;
-	else
-		asize = DSIZE * ((size + (DSIZE) + (DSIZE - 1)) / DSIZE);
+	asize = get_asize(size + WSIZE);
 
     /* Search the free list for a fit */
     if ((bp = find_fit(asize)) != NULL) {
@@ -244,6 +243,25 @@ void *mm_malloc(size_t size)
 	place(bp, asize);
 	return bp;
 }
+
+/*
+ * @brief Calculates adjusted size (smallest block size
+ * greater than a requested block size, that can be
+ * allocated).
+ *
+ * @param size requested block size
+ * @return a size greater than size that can be allocated
+ */
+static size_t get_asize(size_t size)
+{
+	size_t asize;
+	if (size <= MIN_BIGBLK_SIZE)
+		asize = MIN_BIGBLK_SIZE;
+	else
+		asize = DSIZE * ((size + (DSIZE) + (DSIZE - 1)) / DSIZE);
+	return asize;
+}
+
 
 /*
  * @brief Frees an allocated block.
@@ -290,8 +308,11 @@ void mm_free(void *bp)
 void *mm_realloc(void *ptr, size_t size)
 {
     void *oldptr = ptr;
+    size_t old_size = GET_SIZE(HDRP(ptr));
     void *newptr;
     size_t copySize;
+
+    if (size <= old_size - WSIZE)	return ptr;
     
     newptr = mm_malloc(size);
     if (newptr == NULL)
@@ -611,19 +632,66 @@ static void insert_into_list(void *bp)
  */
 static void insert_into_sizeclass(void *bp, void *cp)
 {
-	UNSET_ROOT(bp);
-	char *next_bp = NEXT_LISTP(cp);
-	if (next_bp == cp) {
-		SET_NEXT_LISTP(bp, cp);
-		SET_PREV_LISTP(bp, cp);
-		SET_NEXT_LISTP(cp, bp);
-		SET_PREV_LISTP(cp, bp);
+	size_t size_bp = GET_SIZE(HDRP(bp));
+	if (size_bp <= GET_SIZE(cp)) {
+		insert_into_root(bp, cp);
+		return;
+	}
+	else {
+		char *prevp;
+		for (prevp = cp; NEXT_LISTP(prevp) != cp; prevp = NEXT_LISTP(prevp)) {
+			char *nextp = NEXT_LISTP(prevp);
+			if (GET_SIZE(nextp) >= size_bp) {
+				SET_NEXT_LISTP(prevp, bp);
+				SET_PREV_LISTP(bp, prevp);
+
+				SET_PREV_LISTP(nextp, bp);
+				SET_NEXT_LISTP(bp, nextp);
+				return;
+			}
+		}
+		cp = prevp;
+	}
+
+	insert_after(bp, cp);
+}
+
+static void insert_after(void *bp, void *prev_bp)
+{
+	char *next_bp = NEXT_LISTP(prev_bp);
+	if (next_bp == prev_bp) {
+		SET_NEXT_LISTP(bp, prev_bp);
+		SET_PREV_LISTP(bp, prev_bp);
+		SET_NEXT_LISTP(prev_bp, bp);
+		SET_PREV_LISTP(prev_bp, bp);
 	} else {
 		SET_NEXT_LISTP(bp, next_bp);
-		SET_PREV_LISTP(bp, cp);
+		SET_PREV_LISTP(bp, prev_bp);
 		SET_PREV_LISTP(next_bp, bp);
-		SET_NEXT_LISTP(cp, bp);
+		SET_NEXT_LISTP(prev_bp, bp);
 	}
+}
+
+static void insert_into_root(void *bp, void *cp)
+{
+	char *prev_cp = PREV_CLASSP(cp);
+	char *next_cp = NEXT_CLASSP(cp);
+
+	SET_NEXT_CLASSP(prev_cp, bp);
+	SET_PREV_CLASSP(bp, prev_cp);
+
+	SET_NEXT_CLASSP(bp, next_cp);
+	SET_PREV_CLASSP(next_cp, bp);
+
+	char *prev_lp = PREV_LISTP(cp);
+	SET_NEXT_LISTP(prev_lp, bp);
+	SET_PREV_LISTP(bp, prev_lp);
+
+	SET_PREV_LISTP(cp, bp);
+	SET_NEXT_LISTP(bp, cp);
+
+	UNSET_ROOT(cp);
+	SET_ROOT(bp);
 }
 
 /*
