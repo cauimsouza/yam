@@ -12,19 +12,22 @@
  * (each list contains blocks of size in the interval [2^i + 1, 2^(i+1)]
  * for a certain i).
  *
- * Free blocks are chosen using a first-fit method. If the size is small,
+ * Free blocks are chosen using a best-fit method. If the size is small,
  * we look first in the corresponding fixed-size free list. If the size is
- * big we jump directly to the list of doubled-linked lists. In any case,
- * if a given list is empty or its elements is too small, we try the next
- * list until either we find a large enough free block or we reach the end
- * of the heap. The lists are organized as a doubly-linked list in
- * increasing order (a free list containing larger blocks is after a free
- * list containing smaller blocks).
+ * big we jump directly to the list of doubled-linked lists (sorted in 
+ * increasing order). In any case, if a given list is empty or its elements
+ * is too small, we try the next list until either we find a large enough
+ * free block or we reach the end of the heap. The lists are organized as a
+ * doubly-linked list in increasing order (a free list containing larger
+ * blocks is after a free list containing smaller blocks).
  *
  * Split is performed whenever possible (if the remaining block is larger
  * than the smallest block possible).
  *
- * Free blocks are immediately coalesced with its neighbors.
+ * Free blocks are immediately coalesced with its neighbors and the resulting
+ * free block is stored in a free list (either becomes the head of its free list
+ * if the block is small enters in the right position in its appropriate sorted
+ * free list if the block is large).
  *
  * Free blocks greater than 2048 bytes have a header, a footer, and four
  * pointers:
@@ -635,27 +638,31 @@ static void insert_into_sizeclass(void *bp, void *cp)
 	size_t size_bp = GET_SIZE(HDRP(bp));
 	if (size_bp <= GET_SIZE(cp)) {
 		insert_into_root(bp, cp);
-		return;
-	}
-	else {
+	} else {
 		char *prevp;
 		for (prevp = cp; NEXT_LISTP(prevp) != cp; prevp = NEXT_LISTP(prevp)) {
 			char *nextp = NEXT_LISTP(prevp);
-			if (GET_SIZE(nextp) >= size_bp) {
-				SET_NEXT_LISTP(prevp, bp);
-				SET_PREV_LISTP(bp, prevp);
 
-				SET_PREV_LISTP(nextp, bp);
-				SET_NEXT_LISTP(bp, nextp);
+			if (GET_SIZE(nextp) >= size_bp) {
+				insert_after(bp, prevp);
 				return;
 			}
 		}
 		cp = prevp;
+		insert_after(bp, prevp);
 	}
-
-	insert_after(bp, cp);
 }
 
+/*
+ * @brief Inserts large block in a list after
+ * a given block already in the list.
+ * Only for large blocks in the circular doubly-
+ * linked free lists.
+ * 
+ * @param bp pointer to block to be inserted
+ * @param prev_bp pointer to block that will
+ * should precede the block pointed by bp
+ */
 static void insert_after(void *bp, void *prev_bp)
 {
 	char *next_bp = NEXT_LISTP(prev_bp);
@@ -672,6 +679,15 @@ static void insert_after(void *bp, void *prev_bp)
 	}
 }
 
+/*
+ * @brief Inserts large block in a list as root.
+ * Only for large blocks in the circular doubly-
+ * linked free lists.
+ *
+ * @param bp pointer to block to be inserted
+ * @param cp pointer to list root
+ * @return nothing
+ */
 static void insert_into_root(void *bp, void *cp)
 {
 	char *prev_cp = PREV_CLASSP(cp);
@@ -679,16 +695,11 @@ static void insert_into_root(void *bp, void *cp)
 
 	SET_NEXT_CLASSP(prev_cp, bp);
 	SET_PREV_CLASSP(bp, prev_cp);
-
 	SET_NEXT_CLASSP(bp, next_cp);
 	SET_PREV_CLASSP(next_cp, bp);
 
 	char *prev_lp = PREV_LISTP(cp);
-	SET_NEXT_LISTP(prev_lp, bp);
-	SET_PREV_LISTP(bp, prev_lp);
-
-	SET_PREV_LISTP(cp, bp);
-	SET_NEXT_LISTP(bp, cp);
+	insert_after(bp, prev_lp);
 
 	UNSET_ROOT(cp);
 	SET_ROOT(bp);
