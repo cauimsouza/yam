@@ -574,12 +574,7 @@ static void remove_from_sizeclass(void *bp)
 
 		SET_NEXT_CLASSP(prev_class_ptr, next_list_ptr);
 		SET_PREV_CLASSP(next_class_ptr, next_list_ptr);
-
-		char *new_root = NEXT_CLASSP(prev_class_ptr);
-		assert(NEXT_LISTP(PREV_LISTP(new_root)) == new_root);
-		assert(PREV_LISTP(NEXT_LISTP(new_root)) == new_root);
 	}
-
 }
 
 /*
