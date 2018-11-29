@@ -206,8 +206,9 @@ int mm_init()
 	SET_PREV_CLASSP(epiloguep, prologuep);
 
 
-	if (extend_heap(mem_pagesize() / WSIZE) == NULL)
+	if ((bp = extend_heap(mem_pagesize() / WSIZE)) == NULL)
 		return -1;
+	insert_into_list(bp);
 
     return 0;
 }
@@ -242,7 +243,7 @@ void *mm_malloc(size_t size)
 	extendsize = MAX(asize, mem_pagesize());
 	if ((bp = extend_heap(extendsize / WSIZE)) == NULL)
 		return NULL;
-	remove_from_sizeclass(bp);
+	//remove_from_sizeclass(bp);
 	place(bp, asize);
 	return bp;
 }
@@ -333,7 +334,8 @@ void *mm_realloc(void *ptr, size_t size)
  * @param words number of words units by which the heap
  * will increase (rounded up to nearest pair integer)
  * @return pointer to the last free block in the heap
- * after the extension.
+ * after the extension. This free block will not be
+ * added into a free list.
  */
 static void *extend_heap(size_t words)
 {
@@ -364,7 +366,7 @@ static void *extend_heap(size_t words)
 
 	/* Coalesce if the previous block was free */
 	bp = coalesce(bp);
-	insert_into_list(bp);
+	//insert_into_list(bp);
 
 	return bp;
 }
