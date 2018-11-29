@@ -313,25 +313,32 @@ void *mm_realloc(void *bp, size_t size)
 {
     void *oldptr = bp;
     size_t old_size = GET_SIZE(HDRP(bp));
+    size_t size_next = GET_SIZE(HDRP(NEXT_BLKP(bp)));
+    size_t palloc = GET_PALLOC(HDRP(bp));
+    size_t next_alloc = GET_ALLOC(HDRP(NEXT_BLKP(bp)));
 
     size_t asize = get_asize(size + WSIZE);
-    if (asize + MIN_BLK_SIZE <= old_size) {
-    	size_t palloc = GET_PALLOC(HDRP(bp));
-    	PUT(HDRP(bp), PACK(asize, palloc, 1));
+    if (asize <= old_size) {
+    	return bp;
+	} else if (asize <= old_size + size_next && !next_alloc) {
+		remove_from_sizeclass(NEXT_BLKP(bp));
 
-    	char *next_bp = NEXT_BLKP(bp);
-    	PUT(HDRP(next_bp), PACK(old_size - asize, 1, 1));
-		mm_free(next_bp);
+		size_t new_size = old_size + size_next;
+		PUT(HDRP(bp), PACK(new_size, palloc, 1));
+
+		char *next_bp = NEXT_BLKP(bp);
+		size_next = GET_SIZE(HDRP(next_bp));
+		PUT(HDRP(next_bp), PACK(size_next, 1, 1));
+
 		return bp;
 	}
     
-    size_t copySize;
     void *newptr;
     newptr = mm_malloc(size);
     if (newptr == NULL)
     	return NULL;
 
-    copySize = MIN(size, GET_SIZE(HDRP(bp)));
+    size_t copySize = MIN(size, GET_SIZE(HDRP(bp)));
     memcpy(newptr, oldptr, copySize);
     mm_free(oldptr);
     return newptr;
