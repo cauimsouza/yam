@@ -305,24 +305,33 @@ void mm_free(void *bp)
  * is smaller than size, then a number of bytes igual
  * to its capacity is copied.
  *
- * @param ptr pointed to allocated block
+ * @param bp pointed to allocated block
  * @param size size of the new allocated block
  * @return pointer to the new allocated block
  */
-void *mm_realloc(void *ptr, size_t size)
+void *mm_realloc(void *bp, size_t size)
 {
-    void *oldptr = ptr;
-    size_t old_size = GET_SIZE(HDRP(ptr));
-    void *newptr;
-    size_t copySize;
+    void *oldptr = bp;
+    size_t old_size = GET_SIZE(HDRP(bp));
 
-    if (size <= old_size - WSIZE)	return ptr;
+    size_t asize = get_asize(size + WSIZE);
+    if (asize + MIN_BLK_SIZE <= old_size) {
+    	size_t palloc = GET_PALLOC(HDRP(bp));
+    	PUT(HDRP(bp), PACK(asize, palloc, 1));
+
+    	char *next_bp = NEXT_BLKP(bp);
+    	PUT(HDRP(next_bp), PACK(old_size - asize, 1, 1));
+		mm_free(next_bp);
+		return bp;
+	}
     
+    size_t copySize;
+    void *newptr;
     newptr = mm_malloc(size);
     if (newptr == NULL)
     	return NULL;
 
-    copySize = MIN(size, GET_SIZE(HDRP(ptr)));
+    copySize = MIN(size, GET_SIZE(HDRP(bp)));
     memcpy(newptr, oldptr, copySize);
     mm_free(oldptr);
     return newptr;
